@@ -1,0 +1,49 @@
+"""
+Dependencies for the Integrated QA System
+"""
+
+[project]
+name = "integrated-qa-system"
+version = "0.1.0"
+description = "An integrated RAG-based QA system with BM25 caching and hybrid retrieval"
+requires-python = ">=3.10"
+
+dependencies = [
+    # Document loading
+    "pypdf>=3.0.0",
+    "python-pptx>=0.6.21",
+    "python-docx>=0.8.11",
+    "pytesseract>=0.3.10",
+    "Pillow>=9.0.0",
+
+    # Text processing and chunking
+    "langchain>=0.1.0",
+    "langchain-text-splitters>=0.0.1",
+
+    # Vectorization and embeddings
+    "sentence-transformers>=2.2.0",
+
+    # Vector store
+    "chromadb>=0.4.0",
+
+    # BM25
+    "rank-bm25>=0.2.2",
+
+    # LLM integration
+    "httpx>=0.24.0",
+
+    # Utilities
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
