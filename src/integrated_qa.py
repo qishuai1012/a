@@ -6,15 +6,22 @@ Orchestrates all components for the complete QA pipeline
 from typing import Optional, List, Dict, AsyncGenerator
 from dataclasses import dataclass
 import asyncio
+import structlog
+import logging
 
 from .document_loader import DocumentLoader, Document
 from .document_processor import DocumentProcessor, TextChunk
-from .vector_store import Vectorizer, ChromaVectorStore
-from .bm25_cache import BM25Layer
+from .vector_store.vectorizer import Vectorizer, ChromaVectorStore
+from .bm25_cache.cache import BM25Layer
 from .dialogue_history import DialogueManager, DialogueHistory
 from .rag_system.classifier import QueryType, QueryClassifier
 from .rag_system.retriever import HybridRetriever, SimpleRanker
 from .rag_system.prompt_builder import PromptBuilder
+from .utils.error_handling import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    ComprehensiveErrorHandler
+)
 
 
 @dataclass
@@ -46,7 +53,8 @@ class IntegratedQASystem:
         bm25_cache_path: Optional[str] = None,
         llm_api_key: Optional[str] = None,
         llm_base_url: Optional[str] = None,
-        max_history_turns: int = 10
+        max_history_turns: int = 10,
+        enable_enterprise_features: bool = True
     ):
         """
         Initialize the Integrated QA System
@@ -57,20 +65,44 @@ class IntegratedQASystem:
             llm_api_key: API key for LLM service
             llm_base_url: Base URL for LLM API
             max_history_turns: Maximum conversation turns to keep
+            enable_enterprise_features: Whether to enable enterprise features (vector store, etc.)
         """
         self.llm_api_key = llm_api_key
         self.llm_base_url = llm_base_url or "http://localhost:11434/api"
+        self.enable_enterprise_features = enable_enterprise_features
+
+        # Initialize error handling components
+        self.error_handler = ComprehensiveErrorHandler()
+
+        # Initialize circuit breakers for critical components
+        self.llm_circuit_breaker_config = CircuitBreakerConfig(
+            failure_threshold=3,
+            recovery_timeout=60,
+            expected_exception=(ConnectionError, TimeoutError, Exception),
+            timeout=30
+        )
+        self.llm_circuit_breaker = CircuitBreaker(self.llm_circuit_breaker_config)
 
         # Initialize document pipeline
         self.document_loader = DocumentLoader()
         self.document_processor = DocumentProcessor()
 
-        # Initialize vector store
-        self.vectorizer = Vectorizer()
-        self.vector_store = ChromaVectorStore(
-            persist_directory=vector_store_path
-        )
-        self.vectorizer.set_vector_store(self.vector_store)
+        # Initialize vector store with enterprise features
+        if enable_enterprise_features:
+            from .vector_store.enterprise_vector_store import OptimizedVectorizer, create_enterprise_vector_store, VectorConfig
+            vector_config = VectorConfig(
+                persist_directory=vector_store_path
+            )
+            self.vector_store = create_enterprise_vector_store(vector_config)
+            self.vectorizer = OptimizedVectorizer()
+            self.vectorizer.set_vector_store(self.vector_store)
+        else:
+            from .vector_store.vectorizer import Vectorizer, ChromaVectorStore
+            self.vectorizer = Vectorizer()
+            self.vector_store = ChromaVectorStore(
+                persist_directory=vector_store_path
+            )
+            self.vectorizer.set_vector_store(self.vector_store)
 
         # Initialize BM25 layer
         self.bm25_layer = BM25Layer(cache_file=bm25_cache_path)
@@ -188,56 +220,57 @@ class IntegratedQASystem:
         Returns:
             QAResponse object
         """
-        # Get or create session
-        session = self.dialogue_manager.get_or_create_session(session_id)
-        if session_id is None:
-            session_id = session.session_id
+        with self.error_handler.error_context("query_processing", query_text=query_text, session_id=session_id):
+            # Get or create session
+            session = self.dialogue_manager.get_or_create_session(session_id)
+            if session_id is None:
+                session_id = session.session_id
 
-        # Check BM25 cache first
-        cached_answer = self.bm25_layer.query_cache(query_text)
-        if cached_answer:
-            # Add to history
-            session.add_turn(query_text, cached_answer, {"cache_hit": True})
+            # Check BM25 cache first
+            cached_answer = self.bm25_layer.query_cache(query_text)
+            if cached_answer:
+                # Add to history
+                session.add_turn(query_text, cached_answer, {"cache_hit": True})
 
-            return QAResponse(
-                answer=cached_answer,
-                source_documents=[],
-                confidence=1.0,
-                cache_hit=True,
-                query_type="cached",
-                conversation_id=session_id
-            )
+                return QAResponse(
+                    answer=cached_answer,
+                    source_documents=[],
+                    confidence=1.0,
+                    cache_hit=True,
+                    query_type="cached",
+                    conversation_id=session_id
+                )
 
-        # Classify query
-        query_type = self.classifier.classify(query_text)
+            # Classify query
+            query_type = self.classifier.classify(query_text)
 
-        if query_type == QueryType.GENERAL:
-            # Direct LLM for general knowledge
-            answer = self._query_llm_directly(query_text, session)
-            response = QAResponse(
-                answer=answer,
-                source_documents=[],
-                confidence=0.8,
-                cache_hit=False,
-                query_type="general",
-                conversation_id=session_id
-            )
-        else:
-            # RAG for professional queries
-            answer, sources = self._query_rag(query_text, session, top_k)
-            response = QAResponse(
-                answer=answer,
-                source_documents=[s.content for s in sources],
-                confidence=sources[0].combined_score if sources else 0,
-                cache_hit=False,
-                query_type="professional",
-                conversation_id=session_id
-            )
+            if query_type == QueryType.GENERAL:
+                # Direct LLM for general knowledge
+                answer = self._query_llm_directly(query_text, session)
+                response = QAResponse(
+                    answer=answer,
+                    source_documents=[],
+                    confidence=0.8,
+                    cache_hit=False,
+                    query_type="general",
+                    conversation_id=session_id
+                )
+            else:
+                # RAG for professional queries
+                answer, sources = self._query_rag(query_text, session, top_k)
+                response = QAResponse(
+                    answer=answer,
+                    source_documents=[s.content for s in sources],
+                    confidence=sources[0].combined_score if sources else 0,
+                    cache_hit=False,
+                    query_type="professional",
+                    conversation_id=session_id
+                )
 
-        # Cache the response
-        self.bm25_layer.add_to_cache(query_text, response.answer)
+            # Cache the response
+            self.bm25_layer.add_to_cache(query_text, response.answer)
 
-        return response
+            return response
 
     def _query_llm_directly(
         self,
@@ -292,21 +325,30 @@ class IntegratedQASystem:
 
     def _call_llm(self, messages: List[dict]) -> str:
         """
-        Call LLM API
+        Call LLM API with error handling and circuit breaker
 
         Placeholder implementation - customize for your LLM provider
         """
-        # Example for OpenAI-compatible API:
-        # import openai
-        # client = openai.OpenAI(api_key=self.llm_api_key, base_url=self.llm_base_url)
-        # response = client.chat.completions.create(
-        #     model="your-model",
-        #     messages=messages
-        # )
-        # return response.choices[0].message.content
+        def _internal_call():
+            # Example for OpenAI-compatible API:
+            # import openai
+            # client = openai.OpenAI(api_key=self.llm_api_key, base_url=self.llm_base_url)
+            # response = client.chat.completions.create(
+            #     model="your-model",
+            #     messages=messages
+            # )
+            # return response.choices[0].message.content
 
-        # Placeholder response
-        return "[LLM Response] 这是一个示例回答。请配置实际的 LLM API。"
+            # Placeholder response
+            return "[LLM Response] 这是一个示例回答。请配置实际的 LLM API。"
+
+        # Execute with circuit breaker protection
+        try:
+            return self.llm_circuit_breaker.call(_internal_call)
+        except Exception as e:
+            # Log the error and return a safe fallback
+            self.error_handler.handle_error(e, {"operation": "_call_llm", "messages_length": len(messages)})
+            return "[错误] 无法生成答案，请稍后再试。"
 
     async def query_stream(
         self,
