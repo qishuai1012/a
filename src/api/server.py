@@ -9,14 +9,16 @@ import uvicorn
 
 from ..integrated_qa import IntegratedQASystem, QAResponse
 
-
+#请求体模型
+#问题，会话id，召回（文档）
 class QueryRequest(BaseModel):
     """Query request model"""
     query: str
     session_id: Optional[str] = None
     top_k: int = 5
 
-
+#响应模型
+#答案、来源文档，置信度，是否命中缓存，问题类型，会话id
 class QueryResponse(BaseModel):
     """Query response model"""
     answer: str
@@ -26,13 +28,13 @@ class QueryResponse(BaseModel):
     query_type: str
     conversation_id: str
 
-
+#文档导入成功返回
 class IngestResponse(BaseModel):
     """Document ingestion response"""
     file_path: str
     chunks_created: int
 
-
+#创建FastAPI应用
 def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
     """Create FastAPI application"""
 
@@ -45,6 +47,7 @@ def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
     # Store QA system instance
     app.state.qa_system = qa_system or IntegratedQASystem()
 
+    #提问/query
     @app.post("/query", response_model=QueryResponse)
     async def query(request: QueryRequest):
         """
@@ -70,7 +73,7 @@ def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-
+    #传入文档
     @app.post("/ingest/file")
     async def ingest_file(file: UploadFile = File(...), doc_id: Optional[str] = None):
         """
@@ -82,7 +85,7 @@ def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
         # Save uploaded file temporarily
         import tempfile
         import os
-
+        #保存临时目录
         temp_dir = tempfile.mkdtemp()
         file_path = os.path.join(temp_dir, file.filename)
 
@@ -100,6 +103,7 @@ def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
             if os.path.exists(file_path):
                 os.remove(file_path)
 
+    #导入整个目录
     @app.post("/ingest/directory")
     async def ingest_directory(directory_path: str, file_types: Optional[List[str]] = None):
         """
@@ -109,19 +113,23 @@ def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
         - **file_types**: Optional list of file extensions to process
         """
         try:
+            #对传进来的文档也进行切块
             chunks = app.state.qa_system.ingest_directory(directory_path, file_types)
             return {"directory": directory_path, "chunks_created": chunks}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-
+    通过会话id获取上下文
+    #
     @app.get("/session/{session_id}")
     async def get_session(session_id: str):
         """Get conversation session info"""
         session = app.state.qa_system.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        #返回会话id的所有内容，通常是整理好的字典
         return session.get_summary()
 
+    #根据会话id删除历史记忆
     @app.delete("/session/{session_id}")
     async def clear_session(session_id: str):
         """Clear a conversation session"""
@@ -133,7 +141,7 @@ def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
     async def health_check():
         """Health check endpoint"""
         return {"status": "healthy"}
-
+    #返回操作完成后的FastAPI接口
     return app
 
 
@@ -144,6 +152,7 @@ def run_server(
 ):
     """Run the API server"""
     app = create_app(qa_system)
+    #uvicorn是一个ASGI服务器，（理解为超级司机）
     uvicorn.run(app, host=host, port=port)
 
 
