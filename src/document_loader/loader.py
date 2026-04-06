@@ -102,13 +102,13 @@ class PDFLoader(BaseLoader):
 
 #读取ppt
 class PPTLoader(BaseLoader):
-    “””Loader for PPT/PPTX files”””   #加载ppt文件
+    """Loader for PPT/PPTX files"""   #加载ppt文件
 
     def load(self, file_path: str) -> Document:
         try:
             from pptx import Presentation
         except ImportError:
-            raise ImportError(“Please install python-pptx: pip install python-pptx”)
+            raise ImportError("Please install python-pptx: pip install python-pptx")
 
         #创建ppt加载起对象
         prs = Presentation(file_path)
@@ -120,37 +120,37 @@ class PPTLoader(BaseLoader):
             slide_text = []
             #遍历当前幻灯片的所有元素
             for shape in slide.shapes:
-                #检查幻灯片是否有”text”元素，并且text元素是否不为空
-                if hasattr(shape, “text”) and shape.text:
+                #检查幻灯片是否有"text"元素，并且text元素是否不为空
+                if hasattr(shape, "text") and shape.text:
                     slide_text.append(shape.text)
 
                 # Extract table data if it exists
-                if hasattr(shape, “has_table”) and shape.has_table:
+                if hasattr(shape, "has_table") and shape.has_table:
                     table = shape.table
                     table_content = []
                     for row in table.rows:
                         row_content = []
                         for cell in row.cells:
                             row_content.append(cell.text)
-                        table_content.append(“\t”.join(row_content))
-                    tables_data.append(“\n”.join(table_content))
+                        table_content.append("\t".join(row_content))
+                    tables_data.append("\n".join(table_content))
 
             if slide_text:
                 #提取当前幻灯片的text的内容，[Slide 页数{i+1}]\n加上一个幻灯片的
-                content.append(f”[Slide {i+1}]\n” + “\n”.join(slide_text))
+                content.append(f"[Slide {i+1}]\n" + "\n".join(slide_text))
 
         if tables_data:
             content.extend(tables_data)
 
         return Document(
-            content=”\n”.join(content),
+            content="\n".join(content),
             file_path=file_path,
-            file_type=”ppt”,
-            metadata={“num_slides”: len(prs.slides), “tables_extracted”: len(tables_data)}
+            file_type="ppt",
+            metadata={"num_slides": len(prs.slides), "tables_extracted": len(tables_data)}
         )
 
     def supports(self, file_extension: str) -> bool:
-        return file_extension.lower() in [“.ppt”, “.pptx”]
+        return file_extension.lower() in [".ppt", ".pptx"]
 
 #读取docx
 class DOCXLoader(BaseLoader):

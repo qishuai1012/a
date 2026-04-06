@@ -228,7 +228,8 @@ class MilvusVectorStore(VectorStore):
 
     def delete(self, ids: List[str]) -> None:
         """Delete documents by IDs"""
-        expr = f"chunk_id in [{','.join([f'\"{id}\"' for id in ids])}]"
+       #错误修改齐帅 # expr = f"chunk_id in [{','.join([f'\"{id}\"' for id in ids])}]"
+        expr = f"chunk_id in [{','.join(repr(id) for id in ids)}]"
         delete_result = self.collection.delete(expr=expr)
         self.collection.flush()
         logger.debug(f"Deleted {delete_result.delete_count} documents from Milvus")
@@ -363,7 +364,8 @@ if __name__ == "__main__":
     )
 
     vectorizer = MilvusOptimizedVectorizer()
-    vector_store = create_milvus_vector_store(config)
+    # vector_store = create_milvus_vector_store(config)
+    vector_store = create_default_vector_store(config)
     vectorizer.set_vector_store(vector_store)
 
     # Add documents
