@@ -77,7 +77,9 @@ def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
     )
 
     # Store QA system instance
-    app.state.qa_system = qa_system or IntegratedQASystem()
+    app.state.qa_system = qa_system or IntegratedQASystem(
+        vector_store_provider="milvus"  # Use Milvus as default vector store
+    )
     app.state.auth_service = auth_service
     app.state.rbac_manager = rbac_manager
 

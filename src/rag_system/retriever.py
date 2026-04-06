@@ -6,6 +6,7 @@ Handles hybrid search (vector + BM25) and re-ranking
 from typing import List, Optional, Dict, Tuple
 from dataclasses import dataclass
 import numpy as np
+import math
 
 
 @dataclass
@@ -134,15 +135,19 @@ class HybridRetriever:
         bm25_results: List[dict],
         top_k: int
     ) -> List[RetrievalResult]:
-        """Combine and re-rank results from both sources"""
+        """Combine and re-rank results from both sources using RRF (Reciprocal Rank Fusion)"""
 
         # 使用字典以内容为键，避免重复文档
         result_map: Dict[str, dict] = {}
 
-        # 处理向量检索结果
-        for vr in vector_results:
-            # 动态获取内容字段（可能是属性或字典键）
+        # 使用RRF算法，我们需要记录每个文档在各自结果列表中的排名
+        vector_rank_map = {}
+        bm25_rank_map = {}
+
+        # 处理向量检索结果并记录排名
+        for idx, vr in enumerate(vector_results):
             content = vr.content if hasattr(vr, 'content') else vr.get('content', '')
+
             # 将向量结果存入字典，BM25 分数初始化为 0
             result_map[content] = {
                 "content": content,
@@ -151,13 +156,17 @@ class HybridRetriever:
                 "chunk_id": vr.chunk_id if hasattr(vr, 'chunk_id') else vr.get('chunk_id', ''),
                 "metadata": vr.metadata if hasattr(vr, 'metadata') else vr.get('metadata', {})
             }
+            # 记录排名 (排名从1开始)
+            vector_rank_map[content] = idx + 1
 
-        # 处理 BM25 检索结果（合并或新增）
-        for br in bm25_results:
+        # 处理 BM25 检索结果并记录排名
+        for idx, br in enumerate(bm25_results):
             content = br.get('content', '')
             if content in result_map:
                 # 如果向量搜索也找到了这段内容，更新 BM25 分数
                 result_map[content]["bm25_score"] = br.get('score', 0)
+                # 记录BM25排名
+                bm25_rank_map[content] = idx + 1
             else:
                 # 如果向量搜索没找到，新增条目
                 result_map[content] = {
@@ -167,44 +176,46 @@ class HybridRetriever:
                     "chunk_id": br.get('chunk_id', ''),
                     "metadata": br.get('metadata', {})
                 }
+                # 记录BM25排名
+                bm25_rank_map[content] = idx + 1
 
-        # 提取向量和 BM25 分数，用于归一化
-        vector_scores = [r["vector_score"] for r in result_map.values()]
-        bm25_scores = [r["bm25_score"] for r in result_map.values()]
+        # 使用RRF算法计算综合得分
+        # RRF分数计算公式: score = sum(1 / (k + rank)) for each ranking where k is a constant (typically 60)
+        k_rrf = 60  # RRF参数
+        rrf_results = []
 
-        # 找出各自的最大值用于归一化（防止除以零）
-        max_vector = max(vector_scores) if vector_scores else 1
-        max_bm25 = max(bm25_scores) if bm25_scores else 1
+        for content, data in result_map.items():
+            rrf_score = 0
+
+            # 如果该文档在向量检索结果中
+            if content in vector_rank_map:
+                rrf_score += 1 / (k_rrf + vector_rank_map[content])
+
+            # 如果该文档在BM25检索结果中
+            if content in bm25_rank_map:
+                rrf_score += 1 / (k_rrf + bm25_rank_map[content])
+
+            # 将RRF分数添加到数据中
+            data["rrf_score"] = rrf_score
+
+        # 按RRF分数降序排序
+        sorted_items = sorted(result_map.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
 
         # 存储最终结果
         results = []
-        # 遍历合并后的结果，计算综合得分
-        for content, data in result_map.items():
-            # 使用最大值归一化：当前分数 / 最大分数
-            norm_vector = data["vector_score"] / max_vector if max_vector > 0 else 0
-            norm_bm25 = data["bm25_score"] / max_bm25 if max_bm25 > 0 else 0
-
-            # 加权求和得到综合得分
-            combined = (
-                self.vector_weight * norm_vector +  # 向量得分 * 权重
-                self.bm25_weight * norm_bm25       # BM25 得分 * 权重
-            )
-
-            # 创建 RetrievalResult 对象并添加到结果列表
+        # 只取前top_k个结果
+        for content, data in sorted_items[:top_k]:
+            # 使用RRF分数作为综合得分
             results.append(RetrievalResult(
                 content=data["content"],
                 vector_score=data["vector_score"],
                 bm25_score=data["bm25_score"],
-                combined_score=combined,
+                combined_score=data["rrf_score"],  # 使用RRF分数作为综合分数
                 chunk_id=data["chunk_id"],
                 metadata=data["metadata"]
             ))
 
-        # 按综合得分降序排列
-        results.sort(key=lambda x: x.combined_score, reverse=True)
-
-        # 返回前 top_k 个结果
-        return results[:top_k]
+        return results
 
 #CrossEncoderRanker（精排模型）
 class CrossEncoderRanker:
@@ -269,7 +280,7 @@ class CrossEncoderRanker:
                 content=result.content,
                 vector_score=result.vector_score,
                 bm25_score=result.bm25_score,
-                combined_score=ce_score,  # 使用交叉编码器的新分数
+                combined_score=float(ce_score),  # 使用交叉编码器的新分数
                 chunk_id=result.chunk_id,
                 metadata=result.metadata
             )
@@ -353,6 +364,108 @@ class SimpleRanker:
         reranked_results.sort(key=lambda x: x.combined_score, reverse=True)
 
         # 返回前 top_k 个结果
+        return reranked_results[:top_k]
+
+
+class BGEReranker:
+    """
+    Re-ranker using BGE-reranker model for more accurate re-ranking
+    BGE-reranker is known for its effectiveness in Chinese text re-ranking
+    """
+
+    def __init__(self, model_name: str = "BAAI/bge-reranker-base"):
+        """
+        Initialize BGE re-ranker
+
+        Args:
+            model_name: Name of the BGE re-ranker model
+        """
+        try:
+            from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        except ImportError:
+            raise ImportError("Please install transformers: pip install transformers")
+
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        except Exception as e:
+            print(f"Could not load BGE re-ranker model {model_name}: {e}")
+            print("Falling back to CrossEncoder model")
+            try:
+                from sentence_transformers import CrossEncoder
+                self.model_type = "cross_encoder"
+                self.cross_encoder = CrossEncoder(model_name="cross-encoder/ms-marco-MiniLM-L-6-v2")
+            except ImportError:
+                raise ImportError("Please install sentence-transformers as fallback: pip install sentence-transformers")
+
+    def rerank(
+        self,
+        query: str,
+        results: List[RetrievalResult],
+        top_k: int = 5
+    ) -> List[RetrievalResult]:
+        """
+        Re-rank results using BGE-reranker
+
+        Args:
+            query: Original query
+            results: List of RetrievalResult objects
+            top_k: Number of results to return after re-ranking
+
+        Returns:
+            Re-ranked list of RetrievalResult objects
+        """
+        if not results:
+            return []
+
+        if hasattr(self, 'model_type') and self.model_type == 'cross_encoder':
+            # Use CrossEncoder as fallback
+            pairs = [[query, r.content] for r in results]
+            ce_scores = self.cross_encoder.predict(pairs)
+
+            reranked_results = []
+            for result, ce_score in zip(results, ce_scores):
+                new_result = RetrievalResult(
+                    content=result.content,
+                    vector_score=result.vector_score,
+                    bm25_score=result.bm25_score,
+                    combined_score=float(ce_score),  # 使用交叉编码器的新分数
+                    chunk_id=result.chunk_id,
+                    metadata=result.metadata
+                )
+                reranked_results.append(new_result)
+        else:
+            # Use BGE reranker
+            pairs = [[query, r.content] for r in results]
+
+            # Tokenize the sentence pairs
+            inputs = self.tokenizer(
+                pairs,
+                padding=True,
+                truncation=True,
+                return_tensors='pt',
+                max_length=512
+            )
+
+            # Compute similarity scores
+            scores = self.model(**inputs, return_dict=True).logits.view(-1).float()
+
+            reranked_results = []
+            for result, score in zip(results, scores):
+                new_result = RetrievalResult(
+                    content=result.content,
+                    vector_score=result.vector_score,
+                    bm25_score=result.bm25_score,
+                    combined_score=float(score),  # 使用BGE重排序的新分数
+                    chunk_id=result.chunk_id,
+                    metadata=result.metadata
+                )
+                reranked_results.append(new_result)
+
+        # 按新的综合得分重新排序（降序）
+        reranked_results.sort(key=lambda x: x.combined_score, reverse=True)
+
+        # 返回前 top_k 个最相关的结果
         return reranked_results[:top_k]
 
 

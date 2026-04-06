@@ -20,12 +20,19 @@ except ImportError:
     CHROMADB_AVAILABLE = False
 
 try:
-    from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType
+    from pymilvus import connections, Collection, FieldSchema, CollectionSchema, DataType, utility
     MILVUS_AVAILABLE = True
 except ImportError:
     MILVUS_AVAILABLE = False
 
+try:
+    import redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+
 from .vectorizer import VectorStore, SearchResult, BaseEmbedding, SentenceTransformerEmbedding
+from .milvus_store import MilvusVectorStore, MilvusConfig, create_milvus_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -388,8 +395,16 @@ def create_enterprise_vector_store(config: VectorConfig) -> Union[VectorStore, A
     if config.provider == "chromadb":
         return EnterpriseChromaDB(config)
     elif config.provider == "milvus" and MILVUS_AVAILABLE:
-        # Placeholder for Milvus implementation
-        raise NotImplementedError("Milvus implementation not yet available")
+        from .milvus_store import create_milvus_vector_store, MilvusConfig
+
+        milvus_config = MilvusConfig(
+            collection_name=config.collection_name,
+            dimension=config.dimension,
+            max_connections=config.max_connections,
+            timeout=config.timeout
+        )
+
+        return create_milvus_vector_store(milvus_config)
     elif config.provider == "pinecone":
         # Placeholder for Pinecone implementation
         raise NotImplementedError("Pinecone implementation not yet available")

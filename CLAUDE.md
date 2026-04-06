@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Enterprise-Grade Integrated QA System - A RAG-based question answering system with BM25 caching, hybrid retrieval, comprehensive security, and microservice architecture.
+Enterprise-Grade Integrated QA System - A RAG-based question answering system with BM25 caching, hybrid retrieval, comprehensive security, and microservice architecture. Uses **Milvus** as the primary enterprise vector database.
 
 ### Architecture
 
 ```
-数据源 → 文档加载器 → 文档处理 → 分层切分 → 向量化 → 向量数据库
+数据源 → 文档加载器 → 文档处理 → 分层切分 → 向量化 → 向量数据库(Milvus)
                                 ↓
 用户查询 → API网关 → 认证授权 → IntegratedQASystem → BM25 缓存层 → (命中→直接返回 | 未命中→RAG)
                                 ↓
@@ -25,19 +25,18 @@ Enterprise-Grade Integrated QA System - A RAG-based question answering system wi
             ┌──────▶│  BM25 Cache     │        │ Vector Store   │
             │       │   (Port 8005)   │        │  (Port 8004)   │
             │       └─────────────────┘        └────────────────┘
-            │
+            │                                    (Milvus DB)
     ┌───────▼────────┐
     │Document Processor│
     │   (Port 8006)  │
     └────────────────┘
-```
 ```
 
 ### Module Structure
 
 - `src/document_loader/` - Document loading (PDF, PPT, DOCX, Images)
 - `src/document_processor/` - Text processing and chunking strategies
-- `src/vector_store/` - Vector embeddings and enterprise vector storage (ChromaDB/Milvus)
+- `src/vector_store/` - Vector embeddings and enterprise vector storage (Milvus/ChromaDB)
 - `src/bm25_cache/` - Enhanced BM25-based query caching layer with multi-level caching
 - `src/dialogue_history/` - Multi-turn conversation management
 - `src/rag_system/` - RAG components:
@@ -79,7 +78,7 @@ python main.py microservice qa --port 8002
 # Start Auth Service
 python main.py microservice auth --port 8001
 
-# Start Vector Store Service
+# Start Vector Store Service (uses Milvus)
 python main.py microservice vector_store --port 8004
 
 # Start BM25 Cache Service
@@ -115,3 +114,4 @@ pytest tests/
 6. **Microservice Architecture**: Decoupled services with API gateway and service orchestration
 7. **Multi-level Caching**: Memory → Redis → Persistent caching hierarchy
 8. **Resilience Patterns**: Circuit breakers, retry mechanisms, health checks
+9. **Enterprise Vector Store**: Uses Milvus as the primary vector database for scalability

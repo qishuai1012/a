@@ -25,7 +25,7 @@ dependencies = [
 
     # Vector store
     "chromadb>=0.4.0",
-    "pymilvus>=2.3.0",
+    "pymilvus>=2.3.6",
 
     # BM25
     "rank-bm25>=0.2.2",
@@ -49,7 +49,7 @@ dependencies = [
     "prometheus-client>=0.17.0",
     "structlog>=23.0.0",
     "tenacity>=8.2.0",  # For retry mechanisms
-    "limits>=2.9.0",    # For rate limiting
+    "limits>=3.0.0",    # For rate limiting
     "cryptography>=41.0.0",
     "python-multipart>=0.0.6",
 ]

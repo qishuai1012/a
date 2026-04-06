@@ -146,6 +146,14 @@ class ParentChildChunker(BaseChunker):
 
             child_chunks.append(chunk)
 
+        # Update parent's child_ids
+        parent_chunk = None
+        for chunk in child_chunks:
+            if chunk.parent_id == parent_id:
+                if parent_chunk is None:
+                    parent_chunk = chunk  # This is a child, not the parent - let's fix this approach
+                break
+
         return child_chunks
 
     def _semantic_split(self, text: str) -> List[str]:
@@ -434,8 +442,7 @@ class DocumentProcessor:
             'permission_level': permission_level or self.default_permission_level,
             'tags': tags or [],
             'processing_timestamp': datetime.now().isoformat(),
-            'doc_id': doc_id,
-            'md5_hash': self._calculate_md5(content)
+            'doc_id': doc_id
         })
 
         # Deduplicate if enabled

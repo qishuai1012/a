@@ -8,6 +8,8 @@ from dataclasses import dataclass
 import asyncio
 import structlog
 import logging
+import hashlib
+from datetime import datetime
 
 from .document_loader import DocumentLoader, Document
 from .document_processor import DocumentProcessor, TextChunk
@@ -54,7 +56,10 @@ class IntegratedQASystem:
         llm_api_key: Optional[str] = None,
         llm_base_url: Optional[str] = None,
         max_history_turns: int = 10,
-        enable_enterprise_features: bool = True
+        enable_enterprise_features: bool = True,
+        vector_store_provider: str = "milvus",  # Changed default to Milvus
+        business_category: str = "general",
+        permission_level: str = "public"
     ):
         """
         Initialize the Integrated QA System
@@ -66,10 +71,16 @@ class IntegratedQASystem:
             llm_base_url: Base URL for LLM API
             max_history_turns: Maximum conversation turns to keep
             enable_enterprise_features: Whether to enable enterprise features (vector store, etc.)
+            vector_store_provider: Vector store provider ('milvus', 'chromadb', 'pinecone')
+            business_category: Default business category for documents
+            permission_level: Default permission level for documents
         """
         self.llm_api_key = llm_api_key
         self.llm_base_url = llm_base_url or "http://localhost:11434/api"
         self.enable_enterprise_features = enable_enterprise_features
+        self.vector_store_provider = vector_store_provider
+        self.business_category = business_category
+        self.permission_level = permission_level
 
         # Initialize error handling components
         self.error_handler = ComprehensiveErrorHandler()
@@ -90,9 +101,12 @@ class IntegratedQASystem:
         # Initialize vector store with enterprise features
         if enable_enterprise_features:
             from .vector_store.enterprise_vector_store import OptimizedVectorizer, create_enterprise_vector_store, VectorConfig
+
             vector_config = VectorConfig(
+                provider=vector_store_provider,
                 persist_directory=vector_store_path
             )
+
             self.vector_store = create_enterprise_vector_store(vector_config)
             self.vectorizer = OptimizedVectorizer()
             self.vectorizer.set_vector_store(self.vector_store)
@@ -123,22 +137,63 @@ class IntegratedQASystem:
         # Track initialized state
         self._initialized = False
 
-    def ingest_document(self, file_path: str, doc_id: Optional[str] = None) -> int:
+    def _generate_doc_id(self, file_path: str) -> str:
+        """Generate document ID based on file path and timestamp"""
+        path_hash = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"doc_{path_hash}_{timestamp}"
+
+    def _should_ingest(self, content: str, existing_doc_ids: set) -> bool:
+        """Check if document should be ingested based on content similarity"""
+        content_hash = hashlib.md5(content.encode()).hexdigest()
+        return content_hash not in existing_doc_ids
+
+    def ingest_document(
+        self,
+        file_path: str,
+        doc_id: Optional[str] = None,
+        business_category: Optional[str] = None,
+        permission_level: Optional[str] = None,
+        tags: Optional[List[str]] = None
+    ) -> int:
         """
-        Ingest a document into the system
+        Ingest a document into the system with enterprise features
 
         Args:
             file_path: Path to the document
             doc_id: Optional document ID (auto-generated if not provided)
+            business_category: Business category for the document
+            permission_level: Permission level for the document
+            tags: List of tags for the document
 
         Returns:
             Number of chunks created
         """
+        # Generate doc_id if not provided
+        doc_id = doc_id or self._generate_doc_id(file_path)
+
         # Load document
         doc = self.document_loader.load(file_path)
 
-        # Process and chunk
-        chunks = self.document_processor.process(doc.content, doc_id or file_path)
+        # Process and chunk with enterprise metadata
+        chunks = self.document_processor.process(
+            content=doc.content,
+            doc_id=doc_id,
+            metadata={
+                "file_path": file_path,
+                "file_type": doc.file_type,
+                "original_length": len(doc.content),
+                "processed_at": datetime.now().isoformat(),
+                "source_file_hash": hashlib.md5(doc.content.encode()).hexdigest()
+            },
+            business_category=business_category or self.business_category,
+            permission_level=permission_level or self.permission_level,
+            tags=tags
+        )
+
+        # Check if we have already processed this document
+        if not chunks:
+            return 0
 
         # Store in vector store
         contents = [chunk.content for chunk in chunks]
@@ -146,7 +201,14 @@ class IntegratedQASystem:
             {
                 "chunk_id": chunk.chunk_id,
                 "parent_document": chunk.parent_document,
-                "file_type": doc.file_type
+                "file_type": doc.file_type,
+                "business_category": chunk.business_category,
+                "permission_level": chunk.permission_level,
+                "tags": chunk.tags,
+                "update_timestamp": chunk.update_timestamp.isoformat() if chunk.update_timestamp else None,
+                "semantic_similarity": chunk.semantic_similarity,
+                "parent_id": chunk.parent_id,
+                "child_ids": chunk.child_ids
             }
             for chunk in chunks
         ]
@@ -165,7 +227,10 @@ class IntegratedQASystem:
     def ingest_directory(
         self,
         directory_path: str,
-        file_types: Optional[List[str]] = None
+        file_types: Optional[List[str]] = None,
+        business_category: Optional[str] = None,
+        permission_level: Optional[str] = None,
+        tags: Optional[List[str]] = None
     ) -> int:
         """
         Ingest all documents from a directory
@@ -173,6 +238,9 @@ class IntegratedQASystem:
         Args:
             directory_path: Path to directory
             file_types: Optional list of file extensions to process
+            business_category: Business category for the documents
+            permission_level: Permission level for the documents
+            tags: List of tags for the documents
 
         Returns:
             Total number of chunks created
@@ -181,25 +249,47 @@ class IntegratedQASystem:
         total_chunks = 0
 
         for doc in docs:
-            chunks = self.document_processor.process(doc.content, doc.file_path)
-            contents = [chunk.content for chunk in chunks]
-            metadatas = [
-                {
-                    "chunk_id": chunk.chunk_id,
-                    "parent_document": chunk.parent_document,
-                    "file_type": doc.file_type
-                }
-                for chunk in chunks
-            ]
-
-            self.vectorizer.process_and_store(
-                contents,
-                ids=[chunk.chunk_id for chunk in chunks],
-                metadatas=metadatas
+            chunks = self.document_processor.process(
+                content=doc.content,
+                doc_id=self._generate_doc_id(doc.file_path),
+                metadata={
+                    "file_path": doc.file_path,
+                    "file_type": doc.file_type,
+                    "original_length": len(doc.content),
+                    "processed_at": datetime.now().isoformat(),
+                    "source_file_hash": hashlib.md5(doc.content.encode()).hexdigest()
+                },
+                business_category=business_category or self.business_category,
+                permission_level=permission_level or self.permission_level,
+                tags=tags
             )
 
-            self.bm25_layer.add_documents(contents, metadatas)
-            total_chunks += len(chunks)
+            if chunks:
+                contents = [chunk.content for chunk in chunks]
+                metadatas = [
+                    {
+                        "chunk_id": chunk.chunk_id,
+                        "parent_document": chunk.parent_document,
+                        "file_type": doc.file_type,
+                        "business_category": chunk.business_category,
+                        "permission_level": chunk.permission_level,
+                        "tags": chunk.tags,
+                        "update_timestamp": chunk.update_timestamp.isoformat() if chunk.update_timestamp else None,
+                        "semantic_similarity": chunk.semantic_similarity,
+                        "parent_id": chunk.parent_id,
+                        "child_ids": chunk.child_ids
+                    }
+                    for chunk in chunks
+                ]
+
+                self.vectorizer.process_and_store(
+                    contents,
+                    ids=[chunk.chunk_id for chunk in chunks],
+                    metadatas=metadatas
+                )
+
+                self.bm25_layer.add_documents(contents, metadatas)
+                total_chunks += len(chunks)
 
         return total_chunks
 
@@ -207,15 +297,19 @@ class IntegratedQASystem:
         self,
         query_text: str,
         session_id: Optional[str] = None,
-        top_k: int = 5
+        top_k: int = 5,
+        business_category_filter: Optional[str] = None,
+        permission_level_filter: Optional[str] = None
     ) -> QAResponse:
         """
-        Process a user query
+        Process a user query with optional filters
 
         Args:
             query_text: User's question
             session_id: Optional conversation session ID
             top_k: Number of documents to retrieve
+            business_category_filter: Filter results by business category
+            permission_level_filter: Filter results by permission level
 
         Returns:
             QAResponse object
@@ -257,7 +351,13 @@ class IntegratedQASystem:
                 )
             else:
                 # RAG for professional queries
-                answer, sources = self._query_rag(query_text, session, top_k)
+                answer, sources = self._query_rag(
+                    query_text,
+                    session,
+                    top_k,
+                    business_category_filter,
+                    permission_level_filter
+                )
                 response = QAResponse(
                     answer=answer,
                     source_documents=[s.content for s in sources],
@@ -295,11 +395,30 @@ class IntegratedQASystem:
         self,
         query: str,
         session: DialogueHistory,
-        top_k: int
+        top_k: int,
+        business_category_filter: Optional[str] = None,
+        permission_level_filter: Optional[str] = None
     ) -> tuple:
-        """Query using RAG pipeline"""
-        # Retrieve documents
+        """Query using RAG pipeline with optional filters"""
+        # Prepare metadata filter
+        metadata_filter = {}
+        if business_category_filter:
+            metadata_filter["business_category"] = business_category_filter
+        if permission_level_filter:
+            metadata_filter["permission_level"] = permission_level_filter
+
+        # Retrieve documents with optional filtering
         results = self.retriever.retrieve(query, top_k=top_k * 2)
+
+        # Apply permission filtering at the application level as well
+        if permission_level_filter:
+            filtered_results = []
+            for result in results:
+                perm_level = result.metadata.get("permission_level", "public")
+                # Only allow access if permission level matches or is more public
+                if self._has_permission(permission_level_filter, perm_level):
+                    filtered_results.append(result)
+            results = filtered_results
 
         # Re-rank
         reranked = self.ranker.rerank(query, results, top_k=top_k)
@@ -322,6 +441,20 @@ class IntegratedQASystem:
         session.add_turn(query, answer, {"sources": [r.chunk_id for r in reranked]})
 
         return answer, reranked
+
+    def _has_permission(self, required_level: str, available_level: str) -> bool:
+        """Check if user has sufficient permission level"""
+        permission_hierarchy = {
+            "admin": 4,
+            "internal": 3,
+            "partner": 2,
+            "public": 1
+        }
+
+        req_level_value = permission_hierarchy.get(required_level, 1)
+        avail_level_value = permission_hierarchy.get(available_level, 1)
+
+        return req_level_value <= avail_level_value
 
     def _call_llm(self, messages: List[dict]) -> str:
         """

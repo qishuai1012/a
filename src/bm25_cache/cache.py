@@ -15,6 +15,7 @@ from functools import wraps
 
 from rank_bm25 import BM25Okapi                           #NM25关键词检索算法
 from .enhanced_cache import MultiLevelCache, CacheConfig, CacheDecorator
+from .redis_cache import RedisCacheManager, MultiLevelCache as RedisMultiLevelCache
 
 #定义一个缓存条目
 @dataclass
@@ -240,6 +241,8 @@ class BM25Layer:
         self,
         cache_file: Optional[str] = None,
         score_threshold: float = 0.5,
+        use_redis: bool = True,  # New parameter to enable Redis
+        redis_config: Optional[Dict] = None,
         use_cache: bool = True,
         enable_multi_level_cache: bool = True,
         cache_config: Optional[CacheConfig] = None
@@ -253,6 +256,18 @@ class BM25Layer:
         )
         # 是否允许查缓存？
         self.use_cache = use_cache
+
+        # Redis cache configuration
+        self.use_redis = use_redis
+        if use_redis:
+            try:
+                self.redis_cache = RedisMultiLevelCache(redis_config=redis_config)
+            except Exception as e:
+                print(f"Warning: Could not initialize Redis cache: {e}")
+                self.use_redis = False
+                self.redis_cache = None
+        else:
+            self.redis_cache = None
 
         # Document corpus for direct BM25 retrieval
         self.documents: List[str] = []
@@ -271,18 +286,41 @@ class BM25Layer:
         """Add a query-answer pair to the cache"""
         self.cache.add(query, answer)
 
+        # Update Redis cache if available
+        if self.use_redis and self.redis_cache:
+            # Use a reasonable TTL (e.g., 1 hour) for query-answer pairs
+            self.redis_cache.set(f"bm25_query:{query}", answer, ttl=3600)
+
+        # Update multi-level cache if enabled
+        if self.cache.enable_multi_level_cache:
+            cache_key = f"bm25_direct:{hashlib.sha256(query.encode()).hexdigest()}"
+            self.cache.multi_cache.set(cache_key, answer, ttl=3600)
+
     @CacheDecorator(None)  # Will be set during initialization
     def query_cache(self, query: str) -> Optional[str]:
         """Query the cache for an answer"""
         if not self.use_cache:
             return None
 
-        # Try multi-level cache first if enabled
+        # Try Redis cache first if enabled
+        if self.use_redis and self.redis_cache:
+            redis_result, source = self.redis_cache.get(f"bm25_query:{query}")
+            if redis_result:
+                self.hit_count += 1
+                self.logger.info("Cache hit from Redis cache", query=query)
+                return redis_result
+
+        # Try multi-level cache if enabled
         if self.cache.enable_multi_level_cache:
             cached_result = self.cache.multi_cache.get(f"bm25_query:{query}")
             if cached_result:
                 self.hit_count += 1
                 self.logger.info("Cache hit from multi-level cache", query=query)
+
+                # Update Redis cache if available
+                if self.use_redis and self.redis_cache:
+                    self.redis_cache.set(f"bm25_query:{query}", cached_result)
+
                 return cached_result
 
         # Check internal cache
@@ -294,6 +332,10 @@ class BM25Layer:
             # Update multi-level cache if enabled
             if self.cache.enable_multi_level_cache:
                 self.cache.multi_cache.set(f"bm25_query:{query}", result)
+
+            # Update Redis cache if available
+            if self.use_redis and self.redis_cache:
+                self.redis_cache.set(f"bm25_query:{query}", result)
 
             return result
 

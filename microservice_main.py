@@ -20,12 +20,14 @@ def run_api_gateway(host: str = "0.0.0.0", port: int = 8000):
 
 def run_qa_service(host: str = "0.0.0.0", port: int = 8002, vector_store_path: Optional[str] = None):
     """Run the QA service"""
-    from src.api.server import run_server
+    from src.api.enhanced_server import run_server
     from src.integrated_qa import IntegratedQASystem
 
+    # Initialize with Milvus as the default vector store
     qa_system = IntegratedQASystem(
         vector_store_path=vector_store_path,
-        enable_enterprise_features=True
+        enable_enterprise_features=True,
+        vector_store_provider="milvus"  # Use Milvus by default
     )
 
     # In a real microservice, this would be a separate service
@@ -82,8 +84,12 @@ def run_vector_store_service(host: str = "0.0.0.0", port: int = 8004, persist_pa
 
     app = FastAPI(title="Vector Store Service")
 
-    # Initialize vector store
-    config = VectorConfig(persist_directory=persist_path or "./data/vector_store")
+    # Initialize vector store with Milvus as the provider
+    config = VectorConfig(
+        provider="milvus",  # Changed to use Milvus by default
+        persist_directory=persist_path,
+        collection_name="qa_vectors"
+    )
     vector_store = create_enterprise_vector_store(config)
     vectorizer = OptimizedVectorizer()
     vectorizer.set_vector_store(vector_store)
@@ -122,7 +128,16 @@ def run_bm25_cache_service(host: str = "0.0.0.0", port: int = 8005, cache_path: 
 
     # Initialize cache
     cache_config = CacheConfig(persistent_path=cache_path)
-    bm25_layer = BM25Layer(cache_file=cache_path, cache_config=cache_config)
+    bm25_layer = BM25Layer(
+        cache_file=cache_path,
+        cache_config=cache_config,
+        use_redis=True,  # Enable Redis cache
+        redis_config={
+            "redis_host": "localhost",
+            "redis_port": 6379,
+            "default_ttl": 3600
+        }
+    )
 
     @app.post("/get")
     async def get_cached_response(query: str):
