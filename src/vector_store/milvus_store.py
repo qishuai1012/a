@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MilvusConfig:
     """Configuration for Milvus vector store"""
-    uri: str = "http://localhost:19530"  # Milvus server address
+    uri: str = "http://milvus:19530"  # Milvus server address
     token: Optional[str] = None          # Authentication token (if required)
     db_name: str = "default"             # Database name
     collection_name: str = "qa_collection"  # Collection name
@@ -358,14 +358,14 @@ def create_milvus_vector_store(config: MilvusConfig) -> MilvusVectorStore:
 if __name__ == "__main__":
     # Example usage
     config = MilvusConfig(
-        uri="http://localhost:19530",
+        # uri="http://localhost:195?30",
+        uri="http://milvus:19530",
         collection_name="test_qa_collection",
         dimension=384  # For MiniLM embeddings
     )
 
     vectorizer = MilvusOptimizedVectorizer()
-    # vector_store = create_milvus_vector_store(config)
-    vector_store = create_default_vector_store(config)
+    vector_store = create_milvus_vector_store(config)
     vectorizer.set_vector_store(vector_store)
 
     # Add documents

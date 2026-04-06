@@ -2,7 +2,8 @@
 Vectorization and Vector Store Module
 Handles text embeddings and vector storage/retrieval
 """
-
+import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
