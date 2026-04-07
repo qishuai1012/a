@@ -9,82 +9,17 @@ import sys
 from src.integrated_qa import IntegratedQASystem
 from src.api.server import run_server
 from microservice_main import main as microservice_main
+from src.cli.arguments import create_common_parser
 
 
 def main():
     """Main entry point"""
-    parser = argparse.ArgumentParser(
-        description="Integrated QA System - RAG-based Question Answering"
-    )
-
-    # Add microservice support
-    parser.add_argument(
-        "--microservice-mode",
-        action="store_true",
-        help="Run in microservice mode"
-    )
-
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
-
-    # Server command
-    server_parser = subparsers.add_parser("server", help="Run API server")
-    server_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    server_parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
-    server_parser.add_argument(
-        "--vector-store",
-        help="Path to vector store directory"
-    )
-    server_parser.add_argument(
-        "--bm25-cache",
-        help="Path to BM25 cache file"
-    )
-
-    # Microservice command
-    microservice_parser = subparsers.add_parser("microservice", help="Run in microservice mode")
-    microservice_parser.add_argument(
-        "service_type",
-        choices=["gateway", "qa", "auth", "vector_store", "bm25_cache", "all"],
-        help="Type of service to run"
-    )
-    microservice_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    microservice_parser.add_argument("--port", type=int, help="Port to bind to")
-    microservice_parser.add_argument("--vector-store-path", help="Path to vector store")
-    microservice_parser.add_argument("--cache-path", help="Path to cache file")
-
-    # Ingest command
-    ingest_parser = subparsers.add_parser("ingest", help="Ingest documents")
-    ingest_parser.add_argument("path", help="File or directory path to ingest")
-    ingest_parser.add_argument(
-        "--vector-store",
-        help="Path to vector store directory"
-    )
-    ingest_parser.add_argument(
-        "--bm25-cache",
-        help="Path to BM25 cache file"
-    )
-
-    # Query command
-    query_parser = subparsers.add_parser("query", help="Query the system")
-    query_parser.add_argument("query", help="Query text")
-    query_parser.add_argument(
-        "--vector-store",
-        help="Path to vector store directory"
-    )
-    query_parser.add_argument(
-        "--bm25-cache",
-        help="Path to BM25 cache file"
-    )
-    query_parser.add_argument(
-        "--session",
-        help="Conversation session ID"
-    )
-
+    parser = create_common_parser()
     args = parser.parse_args()
 
     # Handle microservice mode
     if hasattr(args, 'microservice_mode') and args.microservice_mode:
         # Redirect to microservice main
-        import sys
         # Modify sys.argv to pass microservice args
         sys.argv = [sys.argv[0]] + sys.argv[1:]  # Pass through args
         microservice_main()

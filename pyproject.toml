@@ -33,6 +33,7 @@ dependencies = [
     # LLM integration
     "httpx>=0.24.0",
     "openai>=1.0.0",
+    "requests>=2.31.0",  # Added for better HTTP handling
 
     # Web framework
     "fastapi>=0.104.0",

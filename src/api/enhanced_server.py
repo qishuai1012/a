@@ -194,6 +194,37 @@ def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
 
         return LoginResponse(access_token=token, token_type="bearer")
 
+    #注册
+    # 【开放接口】无需登录
+    @app.post("/register")
+    async def register(
+            username: str,
+            password: str,
+            role: str = "user"
+    ):
+        from src.security.authentication import UserRole
+
+        try:
+            role_enum = UserRole(role)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="无效角色")
+
+        try:
+            user = app.state.auth_service.register_user(
+                user_id=username,
+                username=username,
+                password=password,
+                role=role_enum
+            )
+            return {
+                "code": 200,
+                "msg": "注册成功",
+                "user_id": user.user_id,
+                "username": user.username
+            }
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     # Protected endpoints
     @app.post("/query", response_model=QueryResponse)
     @rate_limit(calls=30, per=60)  # Standard user rate limit
@@ -346,15 +377,34 @@ def create_app(qa_system: Optional[IntegratedQASystem] = None) -> FastAPI:
         if not app.state.rbac_manager.has_permission(current_user.user_id, "write"):
             raise HTTPException(status_code=403, detail="Write permission required")
 
+        # Validate directory path to prevent directory traversal
+        import os
+        # Normalize the path to resolve '..' and '.' components
+        normalized_path = os.path.normpath(directory_path)
+
+        # Ensure the path is within allowed directories (e.g., within app data folder)
+        # This assumes there's a designated upload directory for document ingestion
+        allowed_base_path = os.environ.get("DOCUMENT_INGESTION_BASE_PATH", "./data/documents")
+        allowed_base_path = os.path.abspath(allowed_base_path)
+        abs_path = os.path.abspath(normalized_path)
+
+        # Check that the requested path is within the allowed base path
+        if not abs_path.startswith(allowed_base_path):
+            raise HTTPException(status_code=400, detail="Directory path not allowed")
+
+        # Additional validation to ensure it's actually a directory
+        if not os.path.isdir(abs_path):
+            raise HTTPException(status_code=400, detail="Directory does not exist")
+
         try:
             chunks = app.state.qa_system.ingest_directory(
-                directory_path=directory_path,
+                directory_path=abs_path,  # Use the validated absolute path
                 file_types=file_types,
                 business_category=business_category,
                 permission_level=permission_level,
                 tags=tags
             )
-            return {"directory": directory_path, "chunks_created": chunks}
+            return {"directory": abs_path, "chunks_created": chunks}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 

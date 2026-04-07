@@ -102,14 +102,25 @@ class IntegratedQASystem:
         if enable_enterprise_features:
             from .vector_store.enterprise_vector_store import OptimizedVectorizer, create_enterprise_vector_store, VectorConfig
 
+            # Default to chromadb if milvus is not available
             vector_config = VectorConfig(
                 provider=vector_store_provider,
                 persist_directory=vector_store_path
             )
 
-            self.vector_store = create_enterprise_vector_store(vector_config)
-            self.vectorizer = OptimizedVectorizer()
-            self.vectorizer.set_vector_store(self.vector_store)
+            try:
+                self.vector_store = create_enterprise_vector_store(vector_config)
+                self.vectorizer = OptimizedVectorizer()
+                self.vectorizer.set_vector_store(self.vector_store)
+            except Exception as e:
+                print(f"Warning: Could not initialize {vector_store_provider}, falling back to ChromaDB: {str(e)}")
+                # Fallback to ChromaDB
+                from .vector_store.vectorizer import Vectorizer, ChromaVectorStore
+                self.vectorizer = Vectorizer()
+                self.vector_store = ChromaVectorStore(
+                    persist_directory=vector_store_path
+                )
+                self.vectorizer.set_vector_store(self.vector_store)
         else:
             from .vector_store.vectorizer import Vectorizer, ChromaVectorStore
             self.vectorizer = Vectorizer()
@@ -459,21 +470,86 @@ class IntegratedQASystem:
     def _call_llm(self, messages: List[dict]) -> str:
         """
         Call LLM API with error handling and circuit breaker
-
-        Placeholder implementation - customize for your LLM provider
         """
         def _internal_call():
-            # Example for OpenAI-compatible API:
-            # import openai
-            # client = openai.OpenAI(api_key=self.llm_api_key, base_url=self.llm_base_url)
-            # response = client.chat.completions.create(
-            #     model="your-model",
-            #     messages=messages
-            # )
-            # return response.choices[0].message.content
+            import requests
+            import json
 
-            # Placeholder response
-            return "[LLM Response] 这是一个示例回答。请配置实际的 LLM API。"
+            # Try to use the configured LLM API
+            try:
+                # Determine if this is an OpenAI-compatible API (like Ollama) or OpenAI
+                if "api.openai.com" in self.llm_base_url.lower():
+                    # OpenAI API format
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.llm_api_key}"
+                    }
+
+                    data = {
+                        "model": "gpt-3.5-turbo",  # Default OpenAI model
+                        "messages": messages,
+                        "stream": False,
+                        "temperature": 0.7
+                    }
+
+                    response = requests.post(
+                        f"{self.llm_base_url}/v1/chat/completions",
+                        headers=headers,
+                        json=data,
+                        timeout=60
+                    )
+                else:
+                    # Assume it's an OpenAI-compatible API like Ollama
+                    headers = {
+                        "Content-Type": "application/json"
+                    }
+
+                    # Format messages for Ollama if not using OpenAI
+                    formatted_messages = []
+                    for msg in messages:
+                        formatted_messages.append({
+                            "role": msg["role"],
+                            "content": msg["content"]
+                        })
+
+                    data = {
+                        "model": "qwen:7b" if "ollama" in self.llm_base_url.lower() else "llama2",  # Default to qwen if ollama detected
+                        "messages": formatted_messages,
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.7
+                        }
+                    }
+
+                    response = requests.post(
+                        f"{self.llm_base_url}/chat/completions",
+                        headers=headers,
+                        json=data,
+                        timeout=60
+                    )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    return result["choices"][0]["message"]["content"]
+                else:
+                    # Log error details
+                    print(f"LLM API Error: {response.status_code} - {response.text}")
+                    # Return a fallback response
+                    return "抱歉，目前无法获取答案，请稍后重试。"
+
+            except requests.exceptions.ConnectionError:
+                print("无法连接到LLM服务，请确认服务是否正常运行")
+                return "抱歉，目前无法获取答案，请稍后重试。"
+            except requests.exceptions.Timeout:
+                print("LLM服务请求超时")
+                return "抱歉，请求处理超时，请稍后重试。"
+            except KeyError as e:
+                print(f"LLM API响应格式错误: {str(e)} - {response.text if 'response' in locals() else 'No response'}")
+                return "抱歉，服务响应格式异常，请稍后重试。"
+            except Exception as e:
+                # Log the error details
+                print(f"LLM调用发生未知错误: {str(e)}")
+                return "抱歉，目前无法获取答案，请稍后重试。"
 
         # Execute with circuit breaker protection
         try:
@@ -481,7 +557,7 @@ class IntegratedQASystem:
         except Exception as e:
             # Log the error and return a safe fallback
             self.error_handler.handle_error(e, {"operation": "_call_llm", "messages_length": len(messages)})
-            return "[错误] 无法生成答案，请稍后再试。"
+            return "抱歉，系统暂时不可用，请稍后重试。"
 
     async def query_stream(
         self,

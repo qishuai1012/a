@@ -3,7 +3,9 @@
     "allow": [
       "Bash(del:*)",
       "Bash(python:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(curl:*)",
+      "Bash(powershell:*)"
     ]
   }
 }
